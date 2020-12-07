@@ -27,8 +27,8 @@ ars<-unit_conv(ars,c("Arsenic","Arsenic, Inorganic"),"mg/l","ug/l")
     #select all TR arsenic
     trars<-subset(ars,ars$Sample_Fraction %in% c("Total Recoverable","Total") & ars$Char_Name %in% "Arsenic")
     
-    #select all inorganic arsenic
-    inars<-subset(ars,ars$Sample_Fraction %in% c("Total Recoverable","Total") & ars$Char_Name %in% "Arsenic, Inorganic")
+    #select all dissolved inorganic arsenic
+    inars<-subset(ars,ars$Sample_Fraction %in% c("Dissolved") & ars$Char_Name %in% "Arsenic, Inorganic")
     
     #add arsenic and inorganic arsenic to new dataset
     new$trars<-trars$Result_Numeric[match(new$comb,trars$comb,nomatch=NA)]
