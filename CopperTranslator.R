@@ -1,64 +1,97 @@
-#determine if copper translator is feasible
+#examine differences between total recoverable and dissolved fractions of metals, see if a translator is feasible
 
 library(readxl)
 library(tidyverse)
+library(AWQMSdata)
+library(dplyr)
+library(ggplot2)
+library(quantreg)
+source("//deqhq1/abrits/GitHub/ShinyNPDES_AWQMS/NPDES_AWQMSQuery.R")
+source("DissVsTotFunction.R")
 
+#pull all metals data from last 20 years
+metals1<-NPDES_AWQMS_Qry(startdate="2000-01-01",
+                         char=c("Copper","Lead","Zinc","Cadmium","Chromium","Selenium","Silver","Nickel"))
 
-#just looking at copper effluent for the moment
-source("NPDES_AWQMSQuery.R")
-cop<-NPDES_AWQMS_Qry(startdate="2000-01-01",char="Copper",
-                     montype=c("Facility Municipal Sewage (POTW)","Facility Other","Facility Industrial"))
-
-#cannibalize the Dissolved vs Total Recoverable code from EDD quality control check script to compare total and dissolved copper
-#get data with fraction outlined (should be everything anyway)
-cop<-subset(cop,cop$Sample_Fraction %in% c("Total Recoverable","Dissolved","Total"))
+#create copy that we can play with more while leaving an original pull to compare to
+metals<-metals1
 
 #convert all to ug/L
-cop<-unit_conv(cop,c("Copper"),"mg/l","ug/l")
+metals<-unit_conv(metals,c("Copper","Lead","Zinc","Cadmium","Chromium","Selenium","Silver","Nickel"),"mg/l","ug/l")
 
-#create new identifier out of date and characteristic name
-#(used to use activity ID, but a lot of the labs have been using multiple activity IDs per batch 
-#(e.g. unfilterd sample is xx-001A and filtered sample is xx-001B))
-#use date and location since it is extremely rare for a permittee to be taking more than one sample a day at each location for metals data
-cop$comb<-paste0(cop$SampleStartDate,",",cop$MLocID)
+#remove any ND data, can't really compare percents when results are ND 
+metals<-subset(metals, metals$Result_Operator=="=")
 
-#get unique identifiers, put into new dataset
-newcop<-unique(subset(cop,select=c("SampleStartDate","MLocID","Org_Name","Char_Name","comb")))
+#remove data without MDL or MRL, unsure if they are ND or not - 
+#unfortunately this removes all of portland harbor's data, but they didn't include MDL or MRL, so I just don't know if it's ND or not
+metals<-subset(metals, !(is.na(metals$MRLValue))& !(is.na(metals$MDLValue)))
 
-#select all dissolved
-dis<-subset(cop,cop$Sample_Fraction %in% "Dissolved")
+#remove data where result numeric equals MDL, it is likely ND...
+metals<-subset(metals,!(metals$Result_Numeric==metals$MDLValue))
 
-#select all total recoverable/total
-tot<-subset(cop,cop$Sample_Fraction %in% c("Total Recoverable","Total"))
-
-#add dissolved and total columns to new dataset
-newcop$dissolved<-dis$Result_Numeric[match(newcop$comb,dis$comb,nomatch=NA)]
-newcop$total<-tot$Result_Numeric[match(newcop$comb,tot$comb,nomatch=NA)]
-
-#add MDL value (take lower value if one is lower than the other (makes for more conservative test))
-newcop$totMDL<-tot$MDLValue[match(newcop$comb,tot$comb,nomatch=NA)]
-newcop$disMDL<-dis$MDLValue[match(newcop$comb,dis$comb,nomatch=NA)]
+#remove any estimated data...either QA/QC issue or J flag (which is low enough that the value is questionable)
+metals<-subset(metals,metals$Result_Type=="Actual")
 
 
-#calculate the difference, round to 3 figures
-newcop$diff<-round(newcop$total-newcop$dissolved,3)
+#cannibalize the Dissolved vs Total Recoverable code from EDD quality control check script to compare total and dissolved copper
+#get data with fraction outlined
+cop<-subset(metals,metals$Sample_Fraction %in% c("Total Recoverable","Dissolved","Total")& Char_Name %in% "Copper")
+lead<-subset(metals,metals$Sample_Fraction %in% c("Total Recoverable","Dissolved","Total")& Char_Name %in% "Lead")
+zinc<-subset(metals,metals$Sample_Fraction %in% c("Total Recoverable","Dissolved","Total")& Char_Name %in% "Zinc")
+cad<-subset(metals,metals$Sample_Fraction %in% c("Total Recoverable","Dissolved","Total")& Char_Name %in% "Cadmium")
+chrom<-subset(metals,metals$Sample_Fraction %in% c("Total Recoverable","Dissolved","Total")& Char_Name %in% "Chromium")
+sel<-subset(metals,metals$Sample_Fraction %in% c("Total Recoverable","Dissolved","Total")& Char_Name %in% "Selenium")
+silver<-subset(metals,metals$Sample_Fraction %in% c("Total Recoverable","Dissolved","Total")& Char_Name %in% "Silver")
+nick<-subset(metals,metals$Sample_Fraction %in% c("Total Recoverable","Dissolved","Total")& Char_Name %in% "Nickel")
 
-#calculate the percent of arsenic that is inorganic arsenic
-newcop$perc<-(newcop$dissolved/newcop$total)*100
+#run through percent function
+copper<-PercDiss(cop)
+leadper<-PercDiss(lead)
+zincper<-PercDiss(zinc)
+cadper<-PercDiss(cad)
+chromper<-PercDiss(chrom)
+selper<-PercDiss(sel)
+silverper<-PercDiss(silver)
+nickper<-PercDiss(nick)
 
-#round the percentage
-newcop$perc<-round(newcop$perc,2)
+#put them all back together for easier analysis
+metals2<-rbind(copper,leadper,zincper,cadper,chromper,selper,silverper,nickper)
 
-#remove any that are greater than 100% (probably sampling error)
-newcop<-subset(newcop, newcop$perc<=100)
+#for copper, lead, Chromium, and zinc it looks like we have enough data points to try to split the results by Huc8
+#note that we are currently missing some HUC8 information for data submitted by permittees, 
+#working with Lesley and Sarah to try to get that solved since the information should be in AWQMS 
+metres<-metals2%>% group_by(HUC8_Name,Char_Name,MonLocType) %>%
+  summarise(sample=n(), mean=mean(perc),median=median(perc),stdev=sd(perc),ninetyth=quantile(perc, probs=.9),tenth=quantile(perc, probs=.1))
 
-#remove all data points where there is no comparison, just keep copper so we don't have duplicate rows
-newcop<-unique(subset(newcop, !(is.na(newcop$perc))))
-    
-max(newcop$perc)
-min(newcop$perc)
-mean(newcop$perc)
-median(newcop$perc)
-sd(newcop$perc)
-nrow(newcop)
+metres<-subset(metres,MonLocType %in% c("River/Stream","Estuary"))
+
+#run stats without HUC8 split to get a general overview
+mettot<-metals2%>% group_by(Char_Name,MonLocType) %>%
+  summarise(sample=n(), mean=mean(perc),median=median(perc),stdev=sd(perc),ninetyth=quantile(perc, probs=.9),tenth=quantile(perc, probs=.1))
+
+#just get river/estuary
+metsub<-subset(mettot,mettot$MonLocType %in% c("River/Stream","Estuary"))
+
+#graphs
+#remove canal transport, facility, other and lake- almost no data
+metgraph<-subset(metals2,!(metals2$MonLocType %in% c("Lake","Canal Transport","Facility Other")))
+
+ggplot(metgraph,aes(x=Char_Name, y=perc,fill=MonLocType,group=MonLocType))+
+  geom_boxplot()+
+  facet_wrap(~Char_Name, scale="free")+
+  scale_y_continuous(limits=c(0,100))+
+  #geom_text(aes(y=0,label=nrow(metgraph)))+
+  labs(x="",y="Percent Dissolved")+
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+
+#just do river/stream
+metriv<-subset(metals2,metals2$MonLocType %in% c("River/Stream","Estuary"))
+
+ggplot(metriv,aes(x=Char_Name, y=perc,fill=MonLocType))+
+  geom_boxplot()+
+  scale_y_continuous(limits=c(0,100))+
+  labs(x="",y="Percent Dissolved")
+
+
 
